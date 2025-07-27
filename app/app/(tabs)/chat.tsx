@@ -44,15 +44,17 @@ export default function Chat() {
         }),
       },
     ]);
-    try {
-      const response = await axios.post(baseUrl + "send", {
-        body: text,
-      });
-      console.log(response.data);
-    } catch (error) {
-      console.log(error);
+  
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      // Optionally, wrap message in JSON or as plain string
+      const payload = JSON.stringify({ body: text });
+      socketRef.current.send(payload);
+      console.log("📤 Sent message via WebSocket:", payload);
+    } else {
+      console.error("❌ WebSocket is not open, cannot send message");
     }
   }
+  
 
   // Handle incoming WebSocket message
   function handleSocketMessage(event: WebSocketMessageEvent) {
