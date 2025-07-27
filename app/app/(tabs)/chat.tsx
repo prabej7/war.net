@@ -6,7 +6,7 @@ import { useAppSelector } from "@/store/hook/hook";
 import { RootState } from "@/store/store";
 import axios from "axios";
 import { RefreshCcw } from "lucide-react-native";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   StyleSheet,
   KeyboardAvoidingView,
@@ -23,17 +23,17 @@ export type Message = {
 export type Device = {
   connectedAt: string;
   mac: string;
-  message: string; // This can be either a JSON string or plain text
+  message: string; // JSON string or plain text
 };
 
 export default function Chat() {
-  const [messages, setMessage] = useState<Message[]>([]);
-  const memebers = useAppSelector((state: RootState) => state.members);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const members = useAppSelector((state: RootState) => state.members);
   const lastMessageByDeviceRef = useRef<Map<string, string>>(new Map());
+  const socketRef = useRef<WebSocket | null>(null);
 
   async function onSend(text: string) {
-    setMessage((prev) => [
+    setMessages((prev) => [
       ...prev,
       {
         message: text,
@@ -54,66 +54,68 @@ export default function Chat() {
     }
   }
 
-  async function fetchChildMessage() {
+  // Handle incoming WebSocket message
+  function handleSocketMessage(event: WebSocketMessageEvent) {
     try {
-      const response = await axios.get(baseUrl);
-      const devices = response.data.connected_devices;
+      const device: Device = JSON.parse(event.data);
 
-      const newMessages: Message[] = [];
+      // Ignore invalid data
+      if (!device.mac || !device.message) return;
 
-      // Process each device's message
-      devices.forEach((device: Device) => {
-        try {
-          // Try to parse the message as JSON
-          const parsedMessage = JSON.parse(device.message);
-          if (parsedMessage.body) {
-            const deviceMac = device.mac;
-            const currentMessage = parsedMessage.body;
-            const lastMessage = lastMessageByDeviceRef.current.get(deviceMac);
-
-            // Only add the message if it's different from the last one we received from this device
-            if (lastMessage !== currentMessage) {
-              lastMessageByDeviceRef.current.set(deviceMac, currentMessage);
-
-              newMessages.push({
-                message: currentMessage,
-                sent: false,
-                time: new Date().toLocaleTimeString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                }),
-              });
-            }
-          }
-        } catch (parseError) {
-          // If it's not JSON, it might be a system message like "New device connected 👋"
-          console.log("Non-JSON message:", device.message);
+      // Try parse device.message JSON if possible
+      let currentMessage = device.message;
+      try {
+        const parsed = JSON.parse(device.message);
+        if (parsed.body) {
+          currentMessage = parsed.body;
         }
-      });
-
-      // Only update state if there are new messages
-      if (newMessages.length > 0) {
-        setMessage((prev) => [...prev, ...newMessages]);
+      } catch {
+        // Not JSON, treat as plain text
       }
-    } catch (error) {
-      console.log(error);
+
+      const lastMessage = lastMessageByDeviceRef.current.get(device.mac);
+
+      if (lastMessage !== currentMessage) {
+        lastMessageByDeviceRef.current.set(device.mac, currentMessage);
+        setMessages((prev) => [
+          ...prev,
+          {
+            message: currentMessage,
+            sent: false,
+            time: new Date().toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+          },
+        ]);
+      }
+    } catch (err) {
+      console.error("Error parsing WebSocket message:", err);
     }
   }
 
   useEffect(() => {
-    // Initial fetch
-    fetchChildMessage();
+    // Create WebSocket connection to your ESP32 server
+    const socket = new WebSocket("ws://192.168.4.1/ws"); // Use your ESP32 IP and WS path
 
-    // Set up interval to fetch messages every 5 seconds
-    intervalRef.current = setInterval(() => {
-      fetchChildMessage();
-    }, 5000);
+    socketRef.current = socket;
 
-    // Cleanup interval on component unmount
+    socket.onopen = () => {
+      console.log("✅ WebSocket connected to ESP32");
+    };
+
+    socket.onmessage = handleSocketMessage;
+
+    socket.onerror = (error) => {
+      console.error("❌ WebSocket error:", error);
+    };
+
+    socket.onclose = () => {
+      console.log("🔌 WebSocket disconnected");
+    };
+
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
+      socket.close();
     };
   }, []);
 
@@ -126,18 +128,19 @@ export default function Chat() {
         <Header
           title="Chat"
           rightChild={
-            <>
-              <Pressable onPress={fetchChildMessage}>
-                <RefreshCcw />
-              </Pressable>
-            </>
+            <Pressable
+              onPress={() => {
+                // Just clear messages and reset last message map
+                setMessages([]);
+                lastMessageByDeviceRef.current.clear();
+              }}
+            >
+              <RefreshCcw />
+            </Pressable>
           }
         />
         <Messages messages={messages} />
-        <Send
-          onSend={onSend}
-          initialized={messages.length > 0 ? true : false}
-        />
+        <Send onSend={onSend} initialized={messages.length > 0} />
       </View>
     </KeyboardAvoidingView>
   );

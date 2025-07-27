@@ -2,12 +2,12 @@ import { StyleSheet } from "react-native";
 import { Text, View } from "@/components/Themed";
 import { FoundAlert, Map } from "@/components";
 import { useInitialize, useSocket } from "@/hooks";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { WarZone } from "@/constants/warZones";
 import { Alert } from "@/components/Common/Alert";
 import WarInfoGrid from "@/components/Map/WarInfoGrid";
 import React from "react";
-import useAuth from "@/hooks/useAuth";
+
 import { useRouter } from "expo-router";
 import { FoundMessage } from "@/hooks/useSocket";
 import { baseUrl, stations } from "@/constants";
@@ -25,37 +25,58 @@ export default function TabOneScreen() {
   );
   const dispatch = useAppDispatch();
   const members = useAppSelector((state: RootState) => state.members);
+  const socketRef = useRef<WebSocket | null>(null);
 
   const { push } = useRouter();
 
-  async function fetchChild() {
-    try {
-      const response = await axios.get(baseUrl);
-      const fetchedMemebers = response.data.connected_devices;
-      fetchedMemebers.forEach(
-        (member: { mac: string; connectedAt: string }) => {
-          const match = members.find((m) => m.id === member.mac && m.status == "Missing" && !m.location);
+  useEffect(() => {
+    const socket = new WebSocket("ws://192.168.4.1/ws");
+    socketRef.current = socket;
+  
+    socket.onopen = () => {
+      console.log("✅ WebSocket connected to ESP32");
+    };
+  
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+  
+        // Ensure it is a found alert
+        if (data.type === "found" && data.mac) {
+          const match = members.find(
+            (m) => m.id === data.mac && m.status === "Missing" && !m.location
+          );
+  
           if (match) {
             dispatch(setLocation({ id: match.id, location: "Net01" }));
             onChildFound({
-              message: `Your missing child ${match.id} found at Net01.`,
-              timestamp: member.connectedAt,
+              message: data.message,
+              timestamp: data.timestamp,
             });
+          } else {
+            console.log("ℹ️ Device not matched to a missing member.");
           }
         }
-      );
-    } catch (error) {
-      console.log(error);
-    }
-  }
+      } catch (err) {
+        console.error("❌ Error parsing WebSocket message:", err);
+      }
+    };
+  
+    socket.onerror = (err) => {
+      console.error("❌ WebSocket error:", err);
+    };
+  
+    socket.onclose = () => {
+      console.log("🔌 WebSocket disconnected");
+    };
+  
+    return () => {
+      socket.close();
+    };
+  }, [members]); // Watch members for changes
+  
 
-  useEffect(() => {
-    fetchChild();
 
-    const intervalId = setInterval(fetchChild, 5000);
-
-    return () => clearInterval(intervalId);
-  }, [members]);
 
   function onWarZone(warZone: WarZone) {
     setAlert(warZone);
